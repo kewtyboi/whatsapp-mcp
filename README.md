@@ -41,7 +41,7 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 
    ```bash
    cd whatsapp-bridge
-   go run main.go
+   go run .
    ```
 
    Scan the QR code with WhatsApp on your phone to authenticate.
@@ -388,8 +388,9 @@ are documented in [docs/RELEASING.md](docs/RELEASING.md).
 Windows requires CGO for go-sqlite3. Install [MSYS2](https://www.msys2.org/) and enable CGO:
 
 ```bash
+cd whatsapp-bridge
 go env -w CGO_ENABLED=1
-go run main.go
+go run .
 ```
 
 ## Security Notice
