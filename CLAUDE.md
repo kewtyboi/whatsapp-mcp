@@ -73,7 +73,7 @@ whatsapp-mcp/
 ```bash
 # Start Go bridge (scan QR code to authenticate)
 cd whatsapp-bridge
-go run main.go
+go run .
 
 # Or build and run binary
 go build -o whatsapp-bridge && ./whatsapp-bridge
