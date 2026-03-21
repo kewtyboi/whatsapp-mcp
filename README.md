@@ -388,6 +388,7 @@ are documented in [docs/RELEASING.md](docs/RELEASING.md).
 Windows requires CGO for go-sqlite3. Install [MSYS2](https://www.msys2.org/) and enable CGO:
 
 ```bash
+cd whatsapp-bridge
 go env -w CGO_ENABLED=1
 go run .
 ```
