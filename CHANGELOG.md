@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved docstrings with date format examples
 - Media download uses message timestamp for consistent filenames
 - Refactored `send_message` to use unified `recipient` parameter
-- Adopted Release Please for automated versioning/changelog ([`#15`](https://github.com/verygoodplugins/whatsapp-mcp/issues/15)) ([6d45958](https://github.com/verygoodplugins/whatsapp-mcp/commit/6d45958139effa3079ff27a9708d400f89ba9ddf))
+- Adopted Release Please for automated versioning/changelog ([`#15`](https://github.com/kewtyboi/whatsapp-mcp/issues/15)) ([6d45958](https://github.com/kewtyboi/whatsapp-mcp/commit/6d45958139effa3079ff27a9708d400f89ba9ddf))
 
 ### Removed
 
@@ -73,4 +73,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This project is a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp), originally created by [Luke Harries](https://github.com/lharries) in 2024.
 
-The original repository was last updated in April 2025. This fork by [Very Good Plugins](https://verygoodplugins.com) continues active development with bug fixes, new features, and MCP registry publication.
+The original repository was last updated in April 2025. This fork by [kewtyboi](https://github.com/kewtyboi) continues active development with bug fixes, new features, and MCP registry publication.
