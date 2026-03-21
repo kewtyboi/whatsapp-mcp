@@ -1,13 +1,13 @@
 # WhatsApp MCP Server
 
-[![CI](https://github.com/verygoodplugins/whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/verygoodplugins/whatsapp-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/kewtyboi/whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/kewtyboi/whatsapp-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Go 1.24+](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://go.dev/)
 
 A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and send WhatsApp messages.
 
-> Originally created by [Luke Harries](https://github.com/lharries/whatsapp-mcp). Maintained by [Very Good Plugins](https://verygoodplugins.com/?utm_source=github).
+> Originally created by [Luke Harries](https://github.com/lharries/whatsapp-mcp). Maintained by [kewtyboi](https://github.com/kewtyboi).
 
 ## Features
 
@@ -33,7 +33,7 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/verygoodplugins/whatsapp-mcp.git
+   git clone https://github.com/kewtyboi/whatsapp-mcp.git
    cd whatsapp-mcp
    ```
 
@@ -423,7 +423,7 @@ We're grateful to Luke for creating the original project!
 
 ## Links
 
-- [Very Good Plugins](https://verygoodplugins.com/?utm_source=github)
+- [kewtyboi](https://github.com/kewtyboi)
 - [MCP Specification](https://modelcontextprotocol.io/)
 - [whatsmeow](https://github.com/tulir/whatsmeow) - WhatsApp Web API library for Go
 - [FastMCP](https://github.com/jlowin/fastmcp) - Fast Model Context Protocol implementation
