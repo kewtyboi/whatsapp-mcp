@@ -25,7 +25,9 @@ import (
 	"bytes"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -486,6 +488,47 @@ func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 	return chats, nil
 }
 
+// GetLastMessageForChat returns the id, timestamp, and is_from_me of the most
+// recent message in a chat. Returns zero values (no error) when the chat has
+// no known messages locally — callers can still build an app-state patch with
+// a nil MessageKey.
+func (store *MessageStore) GetLastMessageForChat(chatJID string) (string, time.Time, bool, error) {
+	row := store.db.QueryRow(
+		"SELECT id, timestamp, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1",
+		chatJID,
+	)
+	var id string
+	var ts time.Time
+	var isFromMe bool
+	err := row.Scan(&id, &ts, &isFromMe)
+	if err == sql.ErrNoRows {
+		return "", time.Time{}, false, nil
+	}
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	return id, ts, isFromMe, nil
+}
+
+// DeleteChatRows removes the chat and all its messages from the local bridge
+// database. Used after a successful server-side delete-chat mutation so the
+// chat does not re-appear in queries.
+func (store *MessageStore) DeleteChatRows(chatJID string) error {
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM messages WHERE chat_jid = ?", chatJID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM chats WHERE jid = ?", chatJID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 // Extract text content from a message
 func extractTextContent(msg *waProto.Message) string {
 	if msg == nil {
@@ -514,6 +557,24 @@ type SendMessageRequest struct {
 	Recipient string `json:"recipient"`
 	Message   string `json:"message"`
 	MediaPath string `json:"media_path,omitempty"`
+}
+
+// RevokeMessageRequest represents the request body for revoking a previously
+// sent message (WhatsApp "delete for everyone"). Only messages sent by this
+// account can be revoked, and only within WhatsApp's revocation window.
+type RevokeMessageRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	Confirm   bool   `json:"confirm"`
+}
+
+// DeleteChatRequest represents the request body for deleting an entire chat
+// from this account (syncs to all linked devices). The counterparty is not
+// affected. Always purges media alongside the chat; this is not configurable
+// at the endpoint to keep the operation a single-purpose clean wipe.
+type DeleteChatRequest struct {
+	ChatJID string `json:"chat_jid"`
+	Confirm bool   `json:"confirm"`
 }
 
 // Function to send a WhatsApp message
@@ -1421,6 +1482,134 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			})
 		}
 	}))
+
+	// Handler for revoking a previously sent message ("delete for everyone").
+	// Requires confirm=true to guard against accidental calls. Works only for
+	// messages this account sent, within WhatsApp's revocation window (~48h
+	// for most message types). WhatsApp signals failure silently if the
+	// message is too old or not revocable; callers should verify out-of-band.
+	http.HandleFunc("/api/revoke-message", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		var req RevokeMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "Invalid request format"})
+			return
+		}
+		if !req.Confirm {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "confirm must be true to revoke a message"})
+			return
+		}
+		if req.ChatJID == "" || req.MessageID == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "chat_jid and message_id are required"})
+			return
+		}
+		if !client.IsConnected() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: fmt.Sprintf("Invalid chat_jid: %v", err)})
+			return
+		}
+
+		revokeMsg := client.BuildRevoke(chatJID, types.EmptyJID, types.MessageID(req.MessageID))
+		if _, err := client.SendMessage(context.Background(), chatJID, revokeMsg); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: fmt.Sprintf("Revoke failed: %v", err)})
+			return
+		}
+
+		fmt.Printf("revoke: chat=%s message_id=%s ok\n", req.ChatJID, req.MessageID)
+		_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: true, Message: "Message revoke sent"})
+	})
+
+	// Handler for deleting an entire chat from this account. Syncs across all
+	// linked devices; does not affect the counterparty's copy. Always purges
+	// media alongside the chat. Requires confirm=true. On a successful server
+	// mutation we also delete local bridge rows so the chat does not
+	// re-surface in local queries. A local-only failure is logged but does
+	// not reverse the server state (operation is already synced).
+	http.HandleFunc("/api/delete-chat", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		var req DeleteChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "Invalid request format"})
+			return
+		}
+		if !req.Confirm {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "confirm must be true to delete a chat"})
+			return
+		}
+		if req.ChatJID == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "chat_jid is required"})
+			return
+		}
+		if !client.IsConnected() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: fmt.Sprintf("Invalid chat_jid: %v", err)})
+			return
+		}
+
+		lastID, lastTs, lastFromMe, err := messageStore.GetLastMessageForChat(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: fmt.Sprintf("could not look up last message: %v", err)})
+			return
+		}
+
+		var lastKey *waCommon.MessageKey
+		if lastID != "" {
+			fromMe := lastFromMe
+			id := lastID
+			remote := chatJID.String()
+			lastKey = &waCommon.MessageKey{
+				RemoteJID: &remote,
+				FromMe:    &fromMe,
+				ID:        &id,
+			}
+		}
+
+		patch := appstate.BuildDeleteChat(chatJID, lastTs, lastKey, true)
+		if err := client.SendAppState(context.Background(), patch); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: fmt.Sprintf("delete chat failed: %v", err)})
+			return
+		}
+
+		if derr := messageStore.DeleteChatRows(req.ChatJID); derr != nil {
+			fmt.Printf("delete-chat: server mutation ok but local cleanup failed: %v\n", derr)
+		}
+
+		fmt.Printf("delete-chat: chat=%s ok (delete_media=true)\n", req.ChatJID)
+		_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: true, Message: "Chat deletion synced"})
+	})
 
 	// Start the server with proper timeouts
 	// Bind to loopback only - the bridge is a local process; binding on all interfaces
