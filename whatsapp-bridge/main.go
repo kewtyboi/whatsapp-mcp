@@ -1483,6 +1483,33 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 	}))
 
+	// parseDestructiveJID parses a JID for a destructive endpoint and enforces
+	// that it looks like a real WhatsApp target. `types.ParseJID` is lenient
+	// (it will happily accept a bare "not-a-jid" as User="", Server="not-a-jid")
+	// which is fine for send-message because SendMessage fails loud, but
+	// SendAppState silently accepts broken targets. We reject anything that
+	// isn't `<user>@<known-server>` up-front for both endpoints so a typo
+	// never produces a "success" response.
+	parseDestructiveJID := func(raw string) (types.JID, error) {
+		if !strings.Contains(raw, "@") {
+			return types.JID{}, fmt.Errorf("chat_jid must be of the form user@server")
+		}
+		jid, err := types.ParseJID(raw)
+		if err != nil {
+			return types.JID{}, err
+		}
+		if jid.User == "" {
+			return types.JID{}, fmt.Errorf("chat_jid is missing the user part")
+		}
+		switch jid.Server {
+		case types.DefaultUserServer, types.GroupServer, types.BroadcastServer,
+			types.HiddenUserServer, types.NewsletterServer, types.HostedServer:
+			return jid, nil
+		default:
+			return types.JID{}, fmt.Errorf("chat_jid has unknown server %q", jid.Server)
+		}
+	}
+
 	// Handler for revoking a previously sent message ("delete for everyone").
 	// Requires confirm=true to guard against accidental calls. Works only for
 	// messages this account sent, within WhatsApp's revocation window (~48h
@@ -1517,7 +1544,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 
-		chatJID, err := types.ParseJID(req.ChatJID)
+		chatJID, err := parseDestructiveJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: fmt.Sprintf("Invalid chat_jid: %v", err)})
@@ -1570,7 +1597,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 
-		chatJID, err := types.ParseJID(req.ChatJID)
+		chatJID, err := parseDestructiveJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: fmt.Sprintf("Invalid chat_jid: %v", err)})
