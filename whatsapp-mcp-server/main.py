@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from whatsapp import (
     context_to_dict as whatsapp_context_to_dict,
+    delete_chat as whatsapp_delete_chat,
 )
 from whatsapp import (
     download_media as whatsapp_download_media,
@@ -37,6 +38,9 @@ from whatsapp import (
 )
 from whatsapp import (
     list_messages as whatsapp_list_messages,
+)
+from whatsapp import (
+    revoke_message as whatsapp_revoke_message,
 )
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
@@ -413,6 +417,65 @@ def check_bridge_health(
         if attempt < retries:
             time.sleep(retry_delay)
     return False
+
+@mcp.tool()
+def revoke_message(chat_jid: str, message_id: str, confirm: bool = False) -> dict[str, Any]:
+    """Revoke (delete for everyone) a previously sent WhatsApp message.
+
+    DESTRUCTIVE. Only works for messages this account sent, and only within
+    WhatsApp's revocation window (~48 hours for most message types). Outside
+    that window WhatsApp silently ignores the revoke and the message
+    remains on the counterparty's device.
+
+    Args:
+        chat_jid: JID of the chat containing the message
+                  (e.g. "1234567890@s.whatsapp.net" or group JID ending @g.us)
+        message_id: WhatsApp message ID of the message to revoke
+        confirm: MUST be True. Explicit acknowledgement that the call is
+                 destructive. If omitted or False, the call is rejected.
+
+    Returns:
+        A dictionary containing success status and a status message.
+    """
+    if not confirm:
+        return {"success": False, "message": "confirm must be True to revoke a message"}
+    if not chat_jid or not message_id:
+        return {"success": False, "message": "chat_jid and message_id must be provided"}
+
+    success, status_message = whatsapp_revoke_message(chat_jid, message_id)
+    return {"success": success, "message": status_message}
+
+
+@mcp.tool()
+def delete_chat(chat_jid: str, confirm: bool = False) -> dict[str, Any]:
+    """Delete an entire WhatsApp chat from this account.
+
+    DESTRUCTIVE AND IRREVERSIBLE. Removes the chat and its media from every
+    device linked to this account. Does NOT remove the messages from the
+    counterparty's device — they still have everything. Use revoke_message
+    first (within WhatsApp's revocation window) if you need to remove
+    content from the other side.
+
+    Local bridge database rows are also dropped so the chat does not
+    re-surface in local queries.
+
+    Args:
+        chat_jid: JID of the chat to delete
+                  (e.g. "1234567890@s.whatsapp.net" or group JID ending @g.us)
+        confirm: MUST be True. Explicit acknowledgement that the call is
+                 destructive and irreversible. If omitted or False, the
+                 call is rejected.
+
+    Returns:
+        A dictionary containing success status and a status message.
+    """
+    if not confirm:
+        return {"success": False, "message": "confirm must be True to delete a chat"}
+    if not chat_jid:
+        return {"success": False, "message": "chat_jid must be provided"}
+
+    success, status_message = whatsapp_delete_chat(chat_jid)
+    return {"success": success, "message": status_message}
 
 
 def shutdown_handler(signum, frame):
