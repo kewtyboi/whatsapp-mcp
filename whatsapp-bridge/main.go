@@ -456,7 +456,7 @@ type SendMessageRequest struct {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -481,6 +481,11 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 			Server: "s.whatsapp.net", // For personal chats
 		}
 	}
+
+	// chatJID captures the phone-number JID before any LID resolution so that
+	// the DB entry uses the same key as incoming messages from the same contact.
+	chatJID := recipientJID.String()
+	var sentMediaType, sentFilename string
 
 	// For personal chats, resolve phone number JID to LID (Linked Identity).
 	// WhatsApp is migrating to LID-based addressing; messages sent to the
@@ -558,6 +563,18 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 			mediaType = whatsmeow.MediaDocument
 			mimeType = "application/octet-stream"
 		}
+
+		switch mediaType {
+		case whatsmeow.MediaImage:
+			sentMediaType = "image"
+		case whatsmeow.MediaAudio:
+			sentMediaType = "audio"
+		case whatsmeow.MediaVideo:
+			sentMediaType = "video"
+		default:
+			sentMediaType = "document"
+		}
+		sentFilename = mediaPath[strings.LastIndex(mediaPath, "/")+1:]
 
 		// Upload media to WhatsApp servers
 		resp, err := client.Upload(context.Background(), mediaData, mediaType)
@@ -639,10 +656,25 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	sendResp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
+	}
+
+	// Persist the sent message directly. The echo path (handleMessage) also stores
+	// it when WhatsApp echoes it back, but that is asynchronous. A direct INSERT
+	// here ensures downstream MCP queries see the message immediately and that it
+	// survives a connection drop between send and echo.
+	if chatErr := messageStore.StoreChat(chatJID, "", sendResp.Timestamp); chatErr != nil {
+		fmt.Printf("[whatsapp-bridge] warning: failed to upsert chat for sent message: %v\n", chatErr)
+	}
+	if msgErr := messageStore.StoreMessage(
+		sendResp.ID, chatJID, client.Store.ID.String(),
+		message, sendResp.Timestamp, true,
+		sentMediaType, sentFilename, "", nil, nil, nil, 0,
+	); msgErr != nil {
+		fmt.Printf("[whatsapp-bridge] warning: failed to store sent message: %v\n", msgErr)
 	}
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
@@ -1129,7 +1161,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
