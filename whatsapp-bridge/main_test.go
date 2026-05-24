@@ -329,6 +329,67 @@ func TestMigrateLegacyLIDChatsToPhoneJIDs_MissingWhatsAppDBIsNoOp(t *testing.T) 
 	}
 }
 
+// --- Health check tests ---
+
+func TestCheckDBHealth_Writable(t *testing.T) {
+	ms := newTestMessageStore(t)
+	h := ms.CheckDBHealth()
+	if !h.Writable {
+		t.Errorf("expected db_writable=true, got false (err=%s)", h.Err)
+	}
+	if h.LastSentAt != nil {
+		t.Errorf("expected last_sent_at=nil for empty store, got %d", *h.LastSentAt)
+	}
+}
+
+func TestCheckDBHealth_LastSentAt(t *testing.T) {
+	ms := newTestMessageStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if err := ms.StoreChat("1234@s.whatsapp.net", "Test", now); err != nil {
+		t.Fatalf("store chat: %v", err)
+	}
+	if err := ms.StoreMessage(
+		"msg1", "1234@s.whatsapp.net", "me", "hello", now, true,
+		"", "", "", nil, nil, nil, 0,
+	); err != nil {
+		t.Fatalf("store message: %v", err)
+	}
+
+	h := ms.CheckDBHealth()
+	if !h.Writable {
+		t.Errorf("expected db_writable=true, got false")
+	}
+	if h.LastSentAt == nil {
+		t.Fatal("expected last_sent_at to be populated after storing a sent message")
+	}
+	got := time.Unix(*h.LastSentAt, 0).UTC()
+	if !got.Equal(now) {
+		t.Errorf("last_sent_at: got %v, want %v", got, now)
+	}
+}
+
+func TestCheckDBHealth_OnlyIncomingMessages_LastSentAtNil(t *testing.T) {
+	ms := newTestMessageStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if err := ms.StoreChat("5678@s.whatsapp.net", "Other", now); err != nil {
+		t.Fatalf("store chat: %v", err)
+	}
+	// is_from_me=false — should not affect last_sent_at
+	if err := ms.StoreMessage(
+		"incoming1", "5678@s.whatsapp.net", "them", "hi", now, false,
+		"", "", "", nil, nil, nil, 0,
+	); err != nil {
+		t.Fatalf("store message: %v", err)
+	}
+
+	h := ms.CheckDBHealth()
+	if h.LastSentAt != nil {
+		t.Errorf("expected last_sent_at=nil when no sent messages, got %d", *h.LastSentAt)
+	}
+}
+
 func TestMigrateLegacyLIDChatsToPhoneJIDs_AggregatesByPhoneJIDDeterministically(t *testing.T) {
 	ms := newTestMessageStore(t)
 	logger := testLogger()
