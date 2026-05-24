@@ -351,6 +351,50 @@ func (store *MessageStore) Close() error {
 	return store.db.Close()
 }
 
+// DBHealth holds the result of a database health probe.
+type DBHealth struct {
+	Writable   bool
+	LastSentAt *int64 // unix timestamp of most recent sent message, nil if none
+	Err        string
+}
+
+// CheckDBHealth tests writability via a no-op transaction and queries the last
+// sent-message timestamp. It does not return an error; failures are embedded in
+// the returned struct so the health handler can always produce a response.
+func (store *MessageStore) CheckDBHealth() DBHealth {
+	h := DBHealth{}
+	tx, err := store.db.Begin()
+	if err != nil {
+		h.Err = err.Error()
+		return h
+	}
+	if err := tx.Rollback(); err != nil {
+		h.Err = err.Error()
+		return h
+	}
+	h.Writable = true
+
+	// go-sqlite3 returns timestamps as strings; parse manually.
+	var lastSentStr sql.NullString
+	if err := store.db.QueryRow(
+		"SELECT MAX(timestamp) FROM messages WHERE is_from_me=1",
+	).Scan(&lastSentStr); err == nil && lastSentStr.Valid && lastSentStr.String != "" {
+		// go-sqlite3 formats: "2006-01-02 15:04:05-07:00" or "2006-01-02T15:04:05Z07:00"
+		for _, layout := range []string{
+			"2006-01-02 15:04:05-07:00",
+			time.RFC3339,
+			time.RFC3339Nano,
+		} {
+			if t, parseErr := time.Parse(layout, lastSentStr.String); parseErr == nil {
+				unix := t.Unix()
+				h.LastSentAt = &unix
+				break
+			}
+		}
+	}
+	return h
+}
+
 // Store a chat in the database
 func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	_, err := store.db.Exec(
@@ -659,6 +703,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	sendResp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
+		fmt.Printf("level=ERROR component=send contact=%s error=%q attempt=1\n", recipient, err.Error())
 		return false, fmt.Sprintf("Error sending message: %v", err)
 	}
 
@@ -667,14 +712,16 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	// here ensures downstream MCP queries see the message immediately and that it
 	// survives a connection drop between send and echo.
 	if chatErr := messageStore.StoreChat(chatJID, "", sendResp.Timestamp); chatErr != nil {
-		fmt.Printf("[whatsapp-bridge] warning: failed to upsert chat for sent message: %v\n", chatErr)
+		fmt.Printf("level=ERROR component=persist operation=store_chat msg_id=%s contact=%s error=%q\n",
+			sendResp.ID, chatJID, chatErr.Error())
 	}
 	if msgErr := messageStore.StoreMessage(
 		sendResp.ID, chatJID, client.Store.ID.String(),
 		message, sendResp.Timestamp, true,
 		sentMediaType, sentFilename, "", nil, nil, nil, 0,
 	); msgErr != nil {
-		fmt.Printf("[whatsapp-bridge] warning: failed to store sent message: %v\n", msgErr)
+		fmt.Printf("level=ERROR component=persist operation=store_message msg_id=%s contact=%s error=%q\n",
+			sendResp.ID, chatJID, msgErr.Error())
 	}
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
@@ -1120,16 +1167,35 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	// Health check endpoint
 	http.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		status := map[string]interface{}{
-			"status":    "ok",
-			"connected": client.IsConnected(),
-			"timestamp": time.Now().Unix(),
+
+		bridgeConnected := client.IsConnected()
+		db := messageStore.CheckDBHealth()
+
+		var overallStatus string
+		httpCode := http.StatusOK
+		switch {
+		case bridgeConnected && db.Writable:
+			overallStatus = "healthy"
+		case bridgeConnected || db.Writable:
+			overallStatus = "degraded"
+			httpCode = http.StatusServiceUnavailable
+		default:
+			overallStatus = "unhealthy"
+			httpCode = http.StatusServiceUnavailable
 		}
-		if !client.IsConnected() {
-			status["status"] = "disconnected"
-			w.WriteHeader(http.StatusServiceUnavailable)
+
+		resp := map[string]interface{}{
+			"status":           overallStatus,
+			"bridge_connected": bridgeConnected,
+			"db_writable":      db.Writable,
+			"last_sent_at":     db.LastSentAt,
 		}
-		_ = json.NewEncoder(w).Encode(status)
+		if db.Err != "" {
+			resp["error"] = db.Err
+		}
+
+		w.WriteHeader(httpCode)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	// Handler for sending messages
