@@ -1,8 +1,9 @@
 """Tests for WhatsApp MCP server functions."""
 
-from datetime import datetime
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
-from whatsapp import Chat, Contact, Message, chat_to_dict, contact_to_dict, msg_to_dict
+from whatsapp import Chat, Contact, Message, chat_to_dict, contact_to_dict, get_message_context, msg_to_dict
 
 
 class TestMessageConversion:
@@ -142,3 +143,93 @@ class TestContactConversion:
         result = contact_to_dict(contact)
 
         assert result["name"] is None
+
+
+class TestGetMessageContextNullSafety:
+    """Regression tests for VGP #73 — NULL DB values must not crash Message construction."""
+
+    # 9-column row returned for the target message query
+    _TARGET_ROW_ALL_NULL = (
+        None,                      # 0: timestamp
+        None,                      # 1: sender
+        None,                      # 2: chat name
+        None,                      # 3: content
+        None,                      # 4: is_from_me
+        "chat@s.whatsapp.net",     # 5: chats.jid (needed for context queries)
+        "msg-abc",                 # 6: messages.id
+        "chat@s.whatsapp.net",     # 7: messages.chat_jid (used in WHERE)
+        None,                      # 8: media_type
+    )
+
+    # 8-column row returned for before/after context queries
+    _CONTEXT_ROW_ALL_NULL = (
+        None,                      # 0: timestamp
+        None,                      # 1: sender
+        None,                      # 2: chat name
+        None,                      # 3: content
+        None,                      # 4: is_from_me
+        "chat@s.whatsapp.net",     # 5: chats.jid
+        "msg-ctx",                 # 6: messages.id
+        None,                      # 7: media_type
+    )
+
+    def test_null_fields_do_not_crash(self):
+        """NULL timestamp/sender/is_from_me in DB rows must not raise during Message construction."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = self._TARGET_ROW_ALL_NULL
+        mock_cursor.fetchall.return_value = [self._CONTEXT_ROW_ALL_NULL]
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("whatsapp.sqlite3.connect", return_value=mock_conn):
+            ctx = get_message_context("msg-abc", before=1, after=1)
+
+        assert ctx.message.is_from_me is False
+        assert ctx.message.sender == ""
+        assert ctx.message.content == ""
+        assert ctx.message.timestamp == datetime.fromtimestamp(0)
+        assert len(ctx.before) == 1
+        assert ctx.before[0].is_from_me is False
+        assert ctx.before[0].timestamp == datetime.fromtimestamp(0)
+        assert len(ctx.after) == 1
+
+    def test_null_is_from_me_treated_as_false(self):
+        """NULL is_from_me must resolve to False, not crash."""
+        row = self._TARGET_ROW_ALL_NULL
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = row
+        mock_cursor.fetchall.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("whatsapp.sqlite3.connect", return_value=mock_conn):
+            ctx = get_message_context("msg-abc")
+
+        assert ctx.message.is_from_me is False
+
+    def test_valid_row_still_works(self):
+        """Normal rows with all fields present must still parse correctly."""
+        target_row = (
+            "2024-01-15T10:30:00",
+            "1234567890@s.whatsapp.net",
+            "Test Chat",
+            "Hello",
+            1,
+            "1234567890@s.whatsapp.net",
+            "msg-valid",
+            "1234567890@s.whatsapp.net",
+            None,
+        )
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = target_row
+        mock_cursor.fetchall.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("whatsapp.sqlite3.connect", return_value=mock_conn):
+            ctx = get_message_context("msg-valid")
+
+        assert ctx.message.is_from_me is True
+        assert ctx.message.sender == "1234567890@s.whatsapp.net"
+        assert ctx.message.timestamp == datetime(2024, 1, 15, 10, 30, 0)
