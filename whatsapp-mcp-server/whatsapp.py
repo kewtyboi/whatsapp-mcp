@@ -113,6 +113,30 @@ def contact_to_dict(contact: "Contact") -> dict[str, Any]:
     return {"phone_number": contact.phone_number, "name": contact.name, "jid": contact.jid}
 
 
+def context_to_dict(context: "MessageContext") -> dict[str, Any]:
+    """Convert a MessageContext dataclass to a dictionary for JSON serialization."""
+    return {
+        "message": msg_to_dict(context.message),
+        "before": [msg_to_dict(m) for m in context.before],
+        "after": [msg_to_dict(m) for m in context.after],
+    }
+
+
+def _safe_datetime(value: Any) -> datetime:
+    """Parse a datetime from a DB value, returning datetime.min for NULL/invalid."""
+    if value is None:
+        return datetime.min
+    try:
+        return datetime.fromisoformat(str(value))
+    except (ValueError, TypeError):
+        return datetime.min
+
+
+def _safe_bool(value: Any) -> bool:
+    """Coerce a DB boolean (0/1/None) to Python bool."""
+    return bool(value) if value is not None else False
+
+
 def get_sender_name(sender_jid: str) -> str:
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
@@ -286,13 +310,13 @@ def list_messages(
         result = []
         for msg in messages:
             message = Message(
-                timestamp=datetime.fromisoformat(msg[0]),
-                sender=msg[1],
+                timestamp=datetime.fromisoformat(msg[0]) if msg[0] else datetime.fromtimestamp(0),
+                sender=msg[1] or "",
                 chat_name=msg[2],
-                content=msg[3],
-                is_from_me=msg[4],
-                chat_jid=msg[5],
-                id=msg[6],
+                content=msg[3] or "",
+                is_from_me=bool(msg[4] or False),
+                chat_jid=msg[5] or "",
+                id=msg[6] or "",
                 media_type=msg[7],
             )
             result.append(message)
@@ -350,13 +374,13 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
             raise ValueError(f"Message with ID {message_id} not found")
 
         target_message = Message(
-            timestamp=datetime.fromisoformat(msg_data[0]),
-            sender=msg_data[1],
+            timestamp=datetime.fromisoformat(msg_data[0]) if msg_data[0] else datetime.fromtimestamp(0),
+            sender=msg_data[1] or "",
             chat_name=msg_data[2],
-            content=msg_data[3],
-            is_from_me=msg_data[4],
-            chat_jid=msg_data[5],
-            id=msg_data[6],
+            content=msg_data[3] or "",
+            is_from_me=bool(msg_data[4] or False),
+            chat_jid=msg_data[5] or "",
+            id=msg_data[6] or "",
             media_type=msg_data[8],
         )
 
@@ -377,13 +401,13 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
         for msg in cursor.fetchall():
             before_messages.append(
                 Message(
-                    timestamp=datetime.fromisoformat(msg[0]),
-                    sender=msg[1],
+                    timestamp=datetime.fromisoformat(msg[0]) if msg[0] else datetime.fromtimestamp(0),
+                    sender=msg[1] or "",
                     chat_name=msg[2],
-                    content=msg[3],
-                    is_from_me=msg[4],
-                    chat_jid=msg[5],
-                    id=msg[6],
+                    content=msg[3] or "",
+                    is_from_me=bool(msg[4] or False),
+                    chat_jid=msg[5] or "",
+                    id=msg[6] or "",
                     media_type=msg[7],
                 )
             )
@@ -405,13 +429,13 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
         for msg in cursor.fetchall():
             after_messages.append(
                 Message(
-                    timestamp=datetime.fromisoformat(msg[0]),
-                    sender=msg[1],
+                    timestamp=datetime.fromisoformat(msg[0]) if msg[0] else datetime.fromtimestamp(0),
+                    sender=msg[1] or "",
                     chat_name=msg[2],
-                    content=msg[3],
-                    is_from_me=msg[4],
-                    chat_jid=msg[5],
-                    id=msg[6],
+                    content=msg[3] or "",
+                    is_from_me=bool(msg[4] or False),
+                    chat_jid=msg[5] or "",
+                    id=msg[6] or "",
                     media_type=msg[7],
                 )
             )
@@ -640,13 +664,13 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
             return None
 
         message = Message(
-            timestamp=datetime.fromisoformat(msg_data[0]),
-            sender=msg_data[1],
+            timestamp=datetime.fromisoformat(msg_data[0]) if msg_data[0] else datetime.fromtimestamp(0),
+            sender=msg_data[1] or "",
             chat_name=msg_data[2],
-            content=msg_data[3],
-            is_from_me=msg_data[4],
-            chat_jid=msg_data[5],
-            id=msg_data[6],
+            content=msg_data[3] or "",
+            is_from_me=bool(msg_data[4] or False),
+            chat_jid=msg_data[5] or "",
+            id=msg_data[6] or "",
             media_type=msg_data[7],
         )
 

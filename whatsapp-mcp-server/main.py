@@ -20,6 +20,9 @@ from whatsapp import (
     get_last_interaction as whatsapp_get_last_interaction,
 )
 from whatsapp import (
+    context_to_dict as whatsapp_context_to_dict,
+)
+from whatsapp import (
     get_message_context as whatsapp_get_message_context,
 )
 from whatsapp import (
@@ -288,8 +291,11 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> dic
         before: Number of messages to include before the target message (default 5)
         after: Number of messages to include after the target message (default 5)
     """
-    context = whatsapp_get_message_context(message_id, before, after)
-    return context
+    try:
+        context = whatsapp_get_message_context(message_id, before, after)
+    except ValueError as e:
+        return {"error": str(e), "message": None, "before": [], "after": []}
+    return whatsapp_context_to_dict(context)
 
 
 @mcp.tool()
