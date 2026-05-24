@@ -3,7 +3,9 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-from whatsapp import Chat, Contact, Message, chat_to_dict, contact_to_dict, get_message_context, msg_to_dict
+import sqlite3 as real_sqlite3
+
+from whatsapp import Chat, Contact, Message, chat_to_dict, contact_to_dict, get_contact_chats, get_message_context, msg_to_dict
 
 
 class TestMessageConversion:
@@ -233,3 +235,80 @@ class TestGetMessageContextNullSafety:
         assert ctx.message.is_from_me is True
         assert ctx.message.sender == "1234567890@s.whatsapp.net"
         assert ctx.message.timestamp == datetime(2024, 1, 15, 10, 30, 0)
+
+
+class TestGetContactChatsDedup:
+    """Regression tests for VGP #74 — get_contact_chats must return one row per chat."""
+
+    _SCHEMA = """
+        CREATE TABLE chats (
+            jid TEXT PRIMARY KEY,
+            name TEXT,
+            last_message_time TIMESTAMP
+        );
+        CREATE TABLE messages (
+            id TEXT,
+            chat_jid TEXT,
+            sender TEXT,
+            content TEXT,
+            timestamp TIMESTAMP,
+            is_from_me BOOLEAN,
+            PRIMARY KEY (id, chat_jid),
+            FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+        );
+    """
+
+    def _make_db(self):
+        conn = real_sqlite3.connect(":memory:")
+        conn.executescript(self._SCHEMA)
+        return conn
+
+    def test_multiple_messages_same_chat_returns_one_row(self):
+        """Contact with 3 messages in one chat must yield 1 result row, not 3."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)",
+                     ("alice@s.whatsapp.net", "Alice", "2024-01-15T10:30:00"))
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)",
+                (f"m{i}", "alice@s.whatsapp.net", "alice@s.whatsapp.net", f"Msg {i}", f"2024-01-15T10:{10 + i}:00", 0),
+            )
+        conn.commit()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = get_contact_chats("alice@s.whatsapp.net", limit=20, page=0)
+
+        assert len(result) == 1, f"Expected 1 row per chat, got {len(result)}"
+        assert result[0]["jid"] == "alice@s.whatsapp.net"
+        assert result[0]["last_message"] == "Msg 2"
+
+    def test_contact_in_multiple_chats_returns_one_row_each(self):
+        """Contact with messages in 2 chats must yield exactly 2 rows."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)",
+                     ("alice@s.whatsapp.net", "Alice DM", "2024-01-15T11:00:00"))
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)",
+                     ("group1@g.us", "Family Group", "2024-01-15T10:00:00"))
+        conn.execute(
+            "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)",
+            ("dm1", "alice@s.whatsapp.net", "alice@s.whatsapp.net", "DM message", "2024-01-15T11:00:00", 0),
+        )
+        conn.execute(
+            "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)",
+            ("g1", "group1@g.us", "alice@s.whatsapp.net", "Group message", "2024-01-15T10:00:00", 0),
+        )
+        conn.commit()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = get_contact_chats("alice@s.whatsapp.net", limit=20, page=0)
+
+        assert len(result) == 2
+
+    def test_no_chats_returns_empty_list(self):
+        """Contact with no messages returns an empty list without error."""
+        conn = self._make_db()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = get_contact_chats("nobody@s.whatsapp.net")
+
+        assert result == []
