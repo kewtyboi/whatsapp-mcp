@@ -1,17 +1,17 @@
 # WhatsApp Bridge Baseline Audit (2026-05-24)
 
 **Audit scope:** Read-only verification of `kewtyboi/whatsapp-mcp` fork install, upstream state, schema, and known bugs.  
-**Bridge status:** Running (PID 3071 confirmed live as of 2026-05-22).  
-**Working directory:** `/Users/liam/dev/whatsapp-mcp/`
+**Bridge status:** Running (confirmed live at audit time).  
+**Working directory:** `<repo_root>/`
 
 ---
 
 ## 1. Installation & Process State
 
 ### Install Paths
-- **Bridge (Go):** `/Users/liam/dev/whatsapp-mcp/whatsapp-bridge/`
-- **MCP server (Python):** `/Users/liam/dev/whatsapp-mcp/whatsapp-mcp-server/`
-- **Storage:** `/Users/liam/dev/whatsapp-mcp/store/` (messages.db, whatsapp.db)
+- **Bridge (Go):** `<repo_root>/whatsapp-bridge/`
+- **MCP server (Python):** `<repo_root>/whatsapp-mcp-server/`
+- **Storage:** `<repo_root>/whatsapp-bridge/store/` (messages.db, whatsapp.db)
 
 ### Versions
 - **kewtyboi/whatsapp-mcp main branch:** commit `251e842ed8d880c7136ba9841989f62ff2adeb7c`
@@ -139,7 +139,7 @@ Read MCP tools (`list_messages`, `get_message_context`, etc.) correctly expose `
 | Tool | Purpose | Signature | Source |
 |------|---------|-----------|--------|
 | `search_contacts` | Search WhatsApp contacts | `(query: str) → list[dict]` | main.py line 51 |
-| `get_contact` | Look up contact by phone/LID/JID | `(identifier: str) → dict` | main.py line 62 |
+| `get_contact` | Look up contact by phone/LID/JID | `(identifier?: str, phone_number?: str, phone?: str) → dict` | main.py line 63 |
 | `list_messages` | Query messages with optional context | `(after, before, sender_phone_number, chat_jid, query, limit, page, include_context, ...) → list[dict]` | main.py line 158 |
 | `list_chats` | Query chats matching criteria | `(query, limit, page, include_last_message, sort_by) → list[dict]` | main.py line 207 |
 | `get_chat` | Fetch chat metadata by JID | `(chat_jid: str, include_last_message: bool) → dict` | main.py line 232 |
@@ -258,11 +258,11 @@ LIMIT ? OFFSET ?
 
 **Implementation:** `/api/health` (main.go lines 1088–1101)
 
-```json
+```jsonc
 {
   "status": "ok",           // or "disconnected"
   "connected": true,        // boolean
-  "timestamp": 1717594000   // Unix timestamp
+  "timestamp": 1700000000   // Unix timestamp (example)
 }
 ```
 
@@ -324,7 +324,7 @@ from audio import (...)      # local audio processing
 
 **Configuration (env vars):**
 - `WHATSAPP_BRIDGE_PORT` — REST API port (default: 8080) — referenced in whatsapp-mcp-server context but set in bridge
-- `FORWARD_SELF` — forward self-sent messages via webhook (default: true, env var on line 37)
+- `FORWARD_SELF` — forward self-sent messages via webhook (code default: `true` when unset, main.go line 37; `.env.example` ships it as `false`)
 
 ---
 
