@@ -1,9 +1,6 @@
 # Upstream Sync
 
-This fork (`kewtyboi/whatsapp-mcp`) tracks `verygoodplugins/whatsapp-mcp` as its primary
-upstream. The full upstream-sync SOP (6-step procedure, conflict-resolution policy, and
-cadence guidelines) will arrive via #604. Until that PR merges, this file scaffolds the
-Sealjay Watch Log below.
+This fork (`kewtyboi/whatsapp-mcp`) tracks `verygoodplugins/whatsapp-mcp` as its primary upstream. The full upstream-sync SOP — the 6-step procedure, conflict-resolution policy, and cadence guidelines — lives in [`UPSTREAM-SYNC-SOP.md`](./UPSTREAM-SYNC-SOP.md) (PointyTooling #604). This file holds the Sealjay watch log (PointyTooling #606).
 
 ## Sealjay Watch Log
 
