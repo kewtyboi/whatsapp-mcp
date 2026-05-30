@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.liam.whatsapp-bridge</string>
+
+  <!-- IMPORTANT: Do NOT change this path to ~/Library/Application Support/whatsapp-bridge/
+       The WhatsApp Mac App Store app (net.whatsapp.WhatsApp) applies a sandbox policy that
+       SIGKILL's any binary executed from that exact directory. The daemon directory name
+       whatsapp-bridge-daemon is intentionally different. See docs/macos-deploy.md. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/liam/Library/Application Support/whatsapp-bridge-daemon/whatsapp-bridge</string>
+  </array>
+
+  <!-- WorkingDirectory must point at the directory containing the WhatsApp session database
+       (store.db) and any other runtime data files. The binary is separate from the data. -->
+  <key>WorkingDirectory</key>
+  <string>/Users/liam/dev/whatsapp-mcp/whatsapp-bridge</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/liam/Library/Logs/whatsapp-bridge.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/liam/Library/Logs/whatsapp-bridge.error.log</string>
+</dict>
+</plist>
