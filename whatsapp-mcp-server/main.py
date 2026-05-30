@@ -1,3 +1,4 @@
+import os
 import signal
 import sys
 import time
@@ -375,7 +376,9 @@ def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
         return {"success": False, "message": "Failed to download media"}
 
 
-_BRIDGE_HEALTH_URL = "http://localhost:8080/api/health"
+_BRIDGE_HEALTH_URL = os.environ.get(
+    "WHATSAPP_BRIDGE_URL", "http://localhost:8080/api/health"
+)
 _BRIDGE_RETRIES = 3
 _BRIDGE_TIMEOUT_SECS = 5
 _BRIDGE_RETRY_DELAY_SECS = 2

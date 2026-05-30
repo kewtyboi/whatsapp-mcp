@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import main as mcp_main
-from main import check_bridge_health, _BRIDGE_HEALTH_URL, _BRIDGE_RETRIES
+from main import check_bridge_health, _BRIDGE_HEALTH_URL, _BRIDGE_RETRIES, _BRIDGE_TIMEOUT_SECS
 
 
 class TestCheckBridgeHealthUp:
@@ -110,7 +110,7 @@ class TestCheckBridgeHealthDown:
 
         # 3 attempts → sleep after attempt 1 and 2, but NOT after attempt 3
         assert mock_sleep.call_count == 2
-        mock_sleep.assert_called_with(2)
+        assert mock_sleep.call_args_list == [call(2), call(2)]
 
     def test_writes_error_to_stderr_on_each_failed_attempt(self):
         """Each failed attempt writes a message to stderr."""
@@ -133,6 +133,58 @@ class TestCheckBridgeHealthDown:
                 result = check_bridge_health(retries=1, timeout=5, retry_delay=0)
 
         assert result is False
+
+    def test_writes_stderr_on_unexpected_http_status(self):
+        """A non-200 HTTP response writes the status code to stderr on each attempt."""
+        mock_resp = MagicMock()
+        mock_resp.status = 503
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        captured = StringIO()
+
+        with patch("main.urllib.request.urlopen", return_value=mock_resp):
+            with patch("main.time.sleep"):
+                with patch("sys.stderr", captured):
+                    check_bridge_health(retries=2, timeout=5, retry_delay=0)
+
+        output = captured.getvalue()
+        assert "unexpected status 503" in output
+        assert "attempt 1/2" in output
+        assert "attempt 2/2" in output
+
+
+class TestBridgeHealthEnvVar:
+    """WHATSAPP_BRIDGE_URL environment variable overrides the default endpoint."""
+
+    def test_env_var_override_used_as_url(self, monkeypatch):
+        """When WHATSAPP_BRIDGE_URL is set, urlopen is called with that URL."""
+        custom_url = "http://192.168.1.100:9090/api/health"
+        monkeypatch.setenv("WHATSAPP_BRIDGE_URL", custom_url)
+
+        # Reload main so the module-level constant re-evaluates the env var
+        import importlib
+        import main as main_mod
+        importlib.reload(main_mod)
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("main.urllib.request.urlopen", return_value=mock_resp) as mock_open:
+            main_mod.check_bridge_health(url=custom_url, retries=1, timeout=5, retry_delay=0)
+
+        mock_open.assert_called_once_with(custom_url, timeout=5)
+
+    def test_default_url_used_when_env_var_absent(self, monkeypatch):
+        """Without WHATSAPP_BRIDGE_URL, the default localhost:8080 URL is used."""
+        monkeypatch.delenv("WHATSAPP_BRIDGE_URL", raising=False)
+
+        import importlib
+        import main as main_mod
+        importlib.reload(main_mod)
+
+        assert "localhost:8080" in main_mod._BRIDGE_HEALTH_URL
 
 
 class TestMainExitOnBridgeDown:
