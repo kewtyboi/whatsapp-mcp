@@ -1,5 +1,9 @@
+import os
 import signal
 import sys
+import time
+import urllib.request
+import urllib.error
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -372,6 +376,50 @@ def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
         return {"success": False, "message": "Failed to download media"}
 
 
+_BRIDGE_HEALTH_URL = os.environ.get(
+    "WHATSAPP_BRIDGE_URL", "http://localhost:8080/api/health"
+)
+_BRIDGE_RETRIES = 3
+_BRIDGE_TIMEOUT_SECS = 5
+_BRIDGE_RETRY_DELAY_SECS = 2
+
+
+def check_bridge_health(
+    url: str = _BRIDGE_HEALTH_URL,
+    retries: int = _BRIDGE_RETRIES,
+    timeout: float = _BRIDGE_TIMEOUT_SECS,
+    retry_delay: float = _BRIDGE_RETRY_DELAY_SECS,
+) -> bool:
+    """Poll the WhatsApp bridge health endpoint before accepting tool calls.
+
+    Returns True if the bridge responds with HTTP 200, False after all retries
+    are exhausted. Uses stdlib urllib.request — no extra dependencies.
+
+    Args:
+        url: Health endpoint URL (default: http://localhost:8080/api/health).
+        retries: Maximum number of attempts (default: 3).
+        timeout: Per-attempt timeout in seconds (default: 5).
+        retry_delay: Seconds to wait between attempts (default: 2).
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                if resp.status == 200:
+                    return True
+                sys.stderr.write(
+                    f"[whatsapp-mcp] bridge health check attempt {attempt}/{retries}"
+                    f" — unexpected status {resp.status}\n"
+                )
+        except (urllib.error.URLError, OSError) as exc:
+            sys.stderr.write(
+                f"[whatsapp-mcp] bridge health check attempt {attempt}/{retries}"
+                f" — {exc}\n"
+            )
+        if attempt < retries:
+            time.sleep(retry_delay)
+    return False
+
+
 def shutdown_handler(signum, frame):
     """Handle shutdown signals gracefully to prevent zombie processes."""
     sys.exit(0)
@@ -381,6 +429,18 @@ if __name__ == "__main__":
     # Register signal handlers for clean shutdown
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
+
+    # Gate: verify the WhatsApp bridge is reachable before registering tools.
+    # Fails loud (exit 1 + clear message) rather than silent (tools that always error).
+    if not check_bridge_health():
+        sys.stderr.write(
+            "[whatsapp-mcp] ERROR: bridge not reachable at"
+            f" {_BRIDGE_HEALTH_URL} after {_BRIDGE_RETRIES} attempts"
+            " — is com.liam.whatsapp-bridge running?\n"
+        )
+        sys.exit(1)
+
+    sys.stderr.write("[whatsapp-mcp] bridge healthy — starting MCP server\n")
 
     # Initialize and run the server
     mcp.run(transport="stdio")
