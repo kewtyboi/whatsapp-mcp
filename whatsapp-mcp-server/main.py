@@ -2,12 +2,15 @@ import os
 import signal
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from whatsapp import (
+    context_to_dict as whatsapp_context_to_dict,
+)
 from whatsapp import (
     download_media as whatsapp_download_media,
 )
@@ -22,9 +25,6 @@ from whatsapp import (
 )
 from whatsapp import (
     get_last_interaction as whatsapp_get_last_interaction,
-)
-from whatsapp import (
-    context_to_dict as whatsapp_context_to_dict,
 )
 from whatsapp import (
     get_message_context as whatsapp_get_message_context,
@@ -376,9 +376,7 @@ def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
         return {"success": False, "message": "Failed to download media"}
 
 
-_BRIDGE_HEALTH_URL = os.environ.get(
-    "WHATSAPP_BRIDGE_URL", "http://localhost:8080/api/health"
-)
+_BRIDGE_HEALTH_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://localhost:8080/api/health")
 _BRIDGE_RETRIES = 3
 _BRIDGE_TIMEOUT_SECS = 5
 _BRIDGE_RETRY_DELAY_SECS = 2
@@ -411,10 +409,7 @@ def check_bridge_health(
                     f" — unexpected status {resp.status}\n"
                 )
         except (urllib.error.URLError, OSError) as exc:
-            sys.stderr.write(
-                f"[whatsapp-mcp] bridge health check attempt {attempt}/{retries}"
-                f" — {exc}\n"
-            )
+            sys.stderr.write(f"[whatsapp-mcp] bridge health check attempt {attempt}/{retries} — {exc}\n")
         if attempt < retries:
             time.sleep(retry_delay)
     return False

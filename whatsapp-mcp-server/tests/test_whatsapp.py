@@ -1,11 +1,21 @@
 """Tests for WhatsApp MCP server functions."""
 
-from datetime import datetime, timezone
+import sqlite3 as real_sqlite3
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-import sqlite3 as real_sqlite3
-
-from whatsapp import Chat, Contact, Message, chat_to_dict, contact_to_dict, get_contact_chats, get_message_context, msg_to_dict
+from whatsapp import (
+    Chat,
+    Contact,
+    Message,
+    chat_to_dict,
+    contact_to_dict,
+    get_chat,
+    get_contact_chats,
+    get_message_context,
+    list_chats,
+    msg_to_dict,
+)
 
 
 class TestMessageConversion:
@@ -152,27 +162,27 @@ class TestGetMessageContextNullSafety:
 
     # 9-column row returned for the target message query
     _TARGET_ROW_ALL_NULL = (
-        None,                      # 0: timestamp
-        None,                      # 1: sender
-        None,                      # 2: chat name
-        None,                      # 3: content
-        None,                      # 4: is_from_me
-        "chat@s.whatsapp.net",     # 5: chats.jid (needed for context queries)
-        "msg-abc",                 # 6: messages.id
-        "chat@s.whatsapp.net",     # 7: messages.chat_jid (used in WHERE)
-        None,                      # 8: media_type
+        None,  # 0: timestamp
+        None,  # 1: sender
+        None,  # 2: chat name
+        None,  # 3: content
+        None,  # 4: is_from_me
+        "chat@s.whatsapp.net",  # 5: chats.jid (needed for context queries)
+        "msg-abc",  # 6: messages.id
+        "chat@s.whatsapp.net",  # 7: messages.chat_jid (used in WHERE)
+        None,  # 8: media_type
     )
 
     # 8-column row returned for before/after context queries
     _CONTEXT_ROW_ALL_NULL = (
-        None,                      # 0: timestamp
-        None,                      # 1: sender
-        None,                      # 2: chat name
-        None,                      # 3: content
-        None,                      # 4: is_from_me
-        "chat@s.whatsapp.net",     # 5: chats.jid
-        "msg-ctx",                 # 6: messages.id
-        None,                      # 7: media_type
+        None,  # 0: timestamp
+        None,  # 1: sender
+        None,  # 2: chat name
+        None,  # 3: content
+        None,  # 4: is_from_me
+        "chat@s.whatsapp.net",  # 5: chats.jid
+        "msg-ctx",  # 6: messages.id
+        None,  # 7: media_type
     )
 
     def test_null_fields_do_not_crash(self):
@@ -266,8 +276,7 @@ class TestGetContactChatsDedup:
     def test_multiple_messages_same_chat_returns_one_row(self):
         """Contact with 3 messages in one chat must yield 1 result row, not 3."""
         conn = self._make_db()
-        conn.execute("INSERT INTO chats VALUES (?, ?, ?)",
-                     ("alice@s.whatsapp.net", "Alice", "2024-01-15T10:30:00"))
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("alice@s.whatsapp.net", "Alice", "2024-01-15T10:30:00"))
         for i in range(3):
             conn.execute(
                 "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)",
@@ -285,10 +294,8 @@ class TestGetContactChatsDedup:
     def test_contact_in_multiple_chats_returns_one_row_each(self):
         """Contact with messages in 2 chats must yield exactly 2 rows."""
         conn = self._make_db()
-        conn.execute("INSERT INTO chats VALUES (?, ?, ?)",
-                     ("alice@s.whatsapp.net", "Alice DM", "2024-01-15T11:00:00"))
-        conn.execute("INSERT INTO chats VALUES (?, ?, ?)",
-                     ("group1@g.us", "Family Group", "2024-01-15T10:00:00"))
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("alice@s.whatsapp.net", "Alice DM", "2024-01-15T11:00:00"))
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("group1@g.us", "Family Group", "2024-01-15T10:00:00"))
         conn.execute(
             "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)",
             ("dm1", "alice@s.whatsapp.net", "alice@s.whatsapp.net", "DM message", "2024-01-15T11:00:00", 0),
@@ -312,3 +319,109 @@ class TestGetContactChatsDedup:
             result = get_contact_chats("nobody@s.whatsapp.net")
 
         assert result == []
+
+
+class TestListChats:
+    """Regression tests for list_chats include_last_message=False returning empty.
+
+    Root cause: the SELECT always referenced messages.* columns but the LEFT JOIN
+    was only appended when include_last_message=True.  With include_last_message=False
+    SQLite raised "no such column: messages.content" which the except block silently
+    swallowed, returning [].  Fix: use NULL literals for message columns in the False
+    branch so no JOIN is required.
+    """
+
+    _SCHEMA = """
+        CREATE TABLE chats (
+            jid TEXT PRIMARY KEY,
+            name TEXT,
+            last_message_time TIMESTAMP
+        );
+        CREATE TABLE messages (
+            id TEXT,
+            chat_jid TEXT,
+            sender TEXT,
+            content TEXT,
+            timestamp TIMESTAMP,
+            is_from_me BOOLEAN,
+            PRIMARY KEY (id, chat_jid),
+            FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+        );
+    """
+
+    def _make_db(self):
+        conn = real_sqlite3.connect(":memory:")
+        conn.executescript(self._SCHEMA)
+        return conn
+
+    def test_list_chats_false_branch_returns_rows(self):
+        """include_last_message=False must return rows — not an empty list."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("a@s.whatsapp.net", "Alice", "2024-01-15T10:00:00"))
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("b@s.whatsapp.net", "Bob", "2024-01-15T09:00:00"))
+        conn.commit()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = list_chats(include_last_message=False, limit=10)
+
+        assert len(result) == 2, f"Expected 2 chats, got {len(result)} — include_last_message=False bug"
+
+    def test_list_chats_false_branch_message_fields_are_none(self):
+        """include_last_message=False must return chats with null message fields."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("a@s.whatsapp.net", "Alice", "2024-01-15T10:00:00"))
+        conn.commit()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = list_chats(include_last_message=False, limit=10)
+
+        assert len(result) == 1
+        assert result[0]["jid"] == "a@s.whatsapp.net"
+        assert result[0]["last_message"] is None
+        assert result[0]["last_sender"] is None
+        assert result[0]["last_is_from_me"] is None
+
+    def test_list_chats_true_branch_returns_last_message(self):
+        """include_last_message=True must return chats with last_message populated."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("a@s.whatsapp.net", "Alice", "2024-01-15T10:30:00"))
+        conn.execute(
+            "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)",
+            ("m1", "a@s.whatsapp.net", "a@s.whatsapp.net", "Hello!", "2024-01-15T10:30:00", 0),
+        )
+        conn.commit()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = list_chats(include_last_message=True, limit=10)
+
+        assert len(result) == 1
+        assert result[0]["last_message"] == "Hello!"
+
+    def test_get_chat_false_branch_returns_chat(self):
+        """get_chat with include_last_message=False must return the chat, not None."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("a@s.whatsapp.net", "Alice", "2024-01-15T10:00:00"))
+        conn.commit()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = get_chat("a@s.whatsapp.net", include_last_message=False)
+
+        assert result is not None, "get_chat returned None for include_last_message=False — SQL bug"
+        assert result["jid"] == "a@s.whatsapp.net"
+        assert result["last_message"] is None
+
+    def test_get_chat_true_branch_returns_last_message(self):
+        """get_chat with include_last_message=True must return last_message populated."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", ("a@s.whatsapp.net", "Alice", "2024-01-15T10:30:00"))
+        conn.execute(
+            "INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?)",
+            ("m1", "a@s.whatsapp.net", "a@s.whatsapp.net", "Hi there!", "2024-01-15T10:30:00", 0),
+        )
+        conn.commit()
+
+        with patch("whatsapp.sqlite3.connect", return_value=conn):
+            result = get_chat("a@s.whatsapp.net", include_last_message=True)
+
+        assert result is not None
+        assert result["last_message"] == "Hi there!"
