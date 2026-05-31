@@ -16,8 +16,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-import main as mcp_main
-from main import check_bridge_health, _BRIDGE_HEALTH_URL, _BRIDGE_RETRIES, _BRIDGE_TIMEOUT_SECS
+from main import _BRIDGE_HEALTH_URL, _BRIDGE_RETRIES, check_bridge_health
 
 
 class TestCheckBridgeHealthUp:
@@ -163,7 +162,9 @@ class TestBridgeHealthEnvVar:
 
         # Reload main so the module-level constant re-evaluates the env var
         import importlib
+
         import main as main_mod
+
         importlib.reload(main_mod)
 
         mock_resp = MagicMock()
@@ -181,7 +182,9 @@ class TestBridgeHealthEnvVar:
         monkeypatch.delenv("WHATSAPP_BRIDGE_URL", raising=False)
 
         import importlib
+
         import main as main_mod
+
         importlib.reload(main_mod)
 
         assert "localhost:8080" in main_mod._BRIDGE_HEALTH_URL
@@ -221,9 +224,7 @@ class TestMainExitOnBridgeDown:
                     try:
                         exec(  # noqa: S102
                             compile(
-                                "if not check_bridge_health():\n"
-                                "    import sys; sys.exit(1)\n"
-                                "mcp_run()\n",
+                                "if not check_bridge_health():\n    import sys; sys.exit(1)\nmcp_run()\n",
                                 "<test>",
                                 "exec",
                             ),
