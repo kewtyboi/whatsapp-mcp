@@ -890,19 +890,6 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		return
 	}
 
-	// Auto-download media if present
-	if mediaType != "" && url != "" && len(mediaKey) > 0 {
-		logger.Infof("Auto-downloading %s media for message %s", mediaType, msg.Info.ID)
-		go func() {
-			success, _, _, downloadPath, err := downloadMedia(client, messageStore, msg.Info.ID, chatJID)
-			if success && err == nil {
-				logger.Infof("✅ Auto-downloaded media: %s", downloadPath)
-			} else {
-				logger.Warnf("❌ Auto-download failed: %v", err)
-			}
-		}()
-	}
-
 	// Store message in database
 	err = messageStore.StoreMessage(
 		msg.Info.ID,
@@ -929,6 +916,21 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	if err != nil {
 		logger.Warnf("Failed to store message: %v", err)
 	} else {
+		// Auto-download media only after the message row is committed so that downloadMedia
+		// can locate the record by ID without a race condition.
+		if mediaType != "" && url != "" && len(mediaKey) > 0 {
+			logger.Infof("Auto-downloading %s media for message %s", mediaType, msg.Info.ID)
+			msgID := msg.Info.ID
+			go func() {
+				success, _, _, downloadPath, dlErr := downloadMedia(client, messageStore, msgID, chatJID)
+				if success && dlErr == nil {
+					logger.Infof("✅ Auto-downloaded media: %s", downloadPath)
+				} else {
+					logger.Warnf("❌ Auto-download failed: %v", dlErr)
+				}
+			}()
+		}
+
 		// Log message reception
 		timestamp := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
 		direction := "←"
@@ -1386,7 +1388,9 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Start the server with proper timeouts
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Bind to loopback only - the bridge is a local process; binding on all interfaces
+	// would expose the unauthenticated REST API to the network.
+	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Create server with timeouts for stability
@@ -1623,9 +1627,12 @@ connectionSuccess:
 	}
 	startRESTServer(client, messageStore, port)
 
-	// Create a channel to keep the main goroutine alive
+	// exitChan receives OS signals. doneChan is closed by main to broadcast shutdown to
+	// goroutines. Keeping them separate prevents the reconnect goroutine from consuming
+	// the signal before main, which would leave main blocked on exitChan indefinitely.
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGINT, syscall.SIGTERM)
+	doneChan := make(chan struct{})
 
 	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
 
@@ -1667,14 +1674,15 @@ connectionSuccess:
 					reconnectBackoff = time.Second * 5
 				}
 
-			case <-exitChan:
+			case <-doneChan:
 				return
 			}
 		}
 	}()
 
-	// Wait for termination signal
+	// Wait for termination signal then broadcast shutdown to all goroutines
 	<-exitChan
+	close(doneChan)
 
 	fmt.Println("Disconnecting...")
 	// Disconnect client
