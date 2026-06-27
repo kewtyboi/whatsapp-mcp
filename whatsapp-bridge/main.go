@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
@@ -35,6 +36,22 @@ import (
 // Whether to forward messages sent by self via webhook.
 // Defaults to true. Override with env FORWARD_SELF=false.
 var forwardSelfMessages = getEnvBool("FORWARD_SELF", true)
+
+var bridgeAPIToken = os.Getenv("BRIDGE_API_TOKEN")
+
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if bridgeAPIToken != "" {
+			authHeader := r.Header.Get("Authorization")
+			expected := "Bearer " + bridgeAPIToken
+			if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) != 1 {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next(w, r)
+	}
+}
 
 // getEnvBool reads a boolean env var with a default.
 // Accepts: 1/true/yes/on and 0/false/no/off (case-insensitive)
@@ -850,7 +867,7 @@ func resolveLIDChat(client *whatsmeow.Client, chat, senderAlt, recipientAlt type
 }
 
 // Handle regular incoming messages with media support
-func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
+func handleMessage(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
 	// Resolve LID-based chats to phone-based JIDs so that incoming
 	// and outgoing messages land in the same chat entry.
 	resolvedChat := resolveLIDChat(client, msg.Info.Chat, msg.Info.SenderAlt, msg.Info.RecipientAlt, msg.Info.IsFromMe)
@@ -907,22 +924,22 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		fileLength,
 	)
 
-	// Send webhook for incoming messages
-	// Forward self-messages when FORWARD_SELF=true
-	if content != "" && (forwardSelfMessages || !msg.Info.IsFromMe) {
-		SendWebhook(sender, content, chatJID, msg.Info.IsFromMe, quotedMessageId, quotedSender, quotedContent)
-	}
-
 	if err != nil {
 		logger.Warnf("Failed to store message: %v", err)
 	} else {
+		// Send webhook for incoming messages only after successful store.
+		// Forward self-messages when FORWARD_SELF=true
+		if content != "" && (forwardSelfMessages || !msg.Info.IsFromMe) {
+			SendWebhook(sender, content, chatJID, msg.Info.IsFromMe, quotedMessageId, quotedSender, quotedContent)
+		}
+
 		// Auto-download media only after the message row is committed so that downloadMedia
 		// can locate the record by ID without a race condition.
 		if mediaType != "" && url != "" && len(mediaKey) > 0 {
 			logger.Infof("Auto-downloading %s media for message %s", mediaType, msg.Info.ID)
 			msgID := msg.Info.ID
 			go func() {
-				success, _, _, downloadPath, dlErr := downloadMedia(client, messageStore, msgID, chatJID)
+				success, _, _, downloadPath, dlErr := downloadMedia(ctx, client, messageStore, msgID, chatJID)
 				if success && dlErr == nil {
 					logger.Infof("✅ Auto-downloaded media: %s", downloadPath)
 				} else {
@@ -1030,8 +1047,20 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 	return d.MediaType
 }
 
+// sanitiseChatJID neutralises path-traversal sequences in a chat JID so it is
+// safe to use as a directory name component under store/.
+func sanitiseChatJID(chatJID string) (string, error) {
+	sanitised := strings.NewReplacer(
+		"/", "_", "\\", "_", "..", "__", ":", "_",
+	).Replace(filepath.Clean(chatJID))
+	if sanitised == "" || sanitised == "." {
+		return "", fmt.Errorf("invalid chat JID after sanitisation: %q", chatJID)
+	}
+	return sanitised, nil
+}
+
 // Function to download media from a message
-func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
+func downloadMedia(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
 	// Query the database for the message including timestamp
 	var mediaType, url string
 	var mediaKey, fileSHA256, fileEncSHA256 []byte
@@ -1071,7 +1100,12 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	filename := fmt.Sprintf("%s_%s%s", mediaType, timestamp.Format("20060102_150405"), ext)
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	var sanitised string
+	sanitised, err = sanitiseChatJID(chatJID)
+	if err != nil {
+		return false, "", "", "", err
+	}
+	chatDir := fmt.Sprintf("store/%s", sanitised)
 
 	// Create directory for the chat if it doesn't exist
 	if err := os.MkdirAll(chatDir, 0755); err != nil {
@@ -1130,13 +1164,14 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(context.Background(), downloader)
+	mediaData, err := client.Download(ctx, downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
 
 	// Save the downloaded media to file
 	if err := os.WriteFile(localPath, mediaData, 0644); err != nil {
+		os.Remove(localPath)
 		return false, "", "", "", fmt.Errorf("failed to save media file: %v", err)
 	}
 
@@ -1165,7 +1200,7 @@ func extractDirectPathFromURL(url string) string {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) *http.Server {
 	// Health check endpoint
 	http.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1201,7 +1236,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Handler for sending messages
-	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/send", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1244,10 +1279,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Success: success,
 			Message: message,
 		})
-	})
+	}))
 
 	// Handler for downloading media
-	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/download", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1282,7 +1317,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Printf("📥 Download request: message_id=%s chat_jid=%s\n", req.MessageID, req.ChatJID)
 
 		// Download the media
-		success, mediaType, filename, path, err := downloadMedia(client, messageStore, req.MessageID, req.ChatJID)
+		success, mediaType, filename, path, err := downloadMedia(r.Context(), client, messageStore, req.MessageID, req.ChatJID)
 
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -1309,10 +1344,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Filename: filename,
 			Path:     path,
 		})
-	})
+	}))
 
 	// Handler for sending typing indicator
-	http.HandleFunc("/api/typing", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/typing", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1385,7 +1420,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 				"message": fmt.Sprintf("Typing indicator set to %v", req.IsTyping),
 			})
 		}
-	})
+	}))
 
 	// Start the server with proper timeouts
 	// Bind to loopback only - the bridge is a local process; binding on all interfaces
@@ -1407,6 +1442,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
+	return server
 }
 
 func main() {
@@ -1471,12 +1507,15 @@ func main() {
 	// Channel to signal reconnection needs
 	reconnectChan := make(chan bool, 1)
 
+	// bridgeCtx is cancelled on shutdown so goroutines (downloads, event handler) exit cleanly.
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.Message:
 			// Process regular messages
-			handleMessage(client, messageStore, v, logger)
+			handleMessage(bridgeCtx, client, messageStore, v, logger)
 
 		case *events.HistorySync:
 			// Process history sync events
@@ -1625,7 +1664,7 @@ connectionSuccess:
 		}
 		port = v
 	}
-	startRESTServer(client, messageStore, port)
+	server := startRESTServer(client, messageStore, port)
 
 	// exitChan receives OS signals. doneChan is closed by main to broadcast shutdown to
 	// goroutines. Keeping them separate prevents the reconnect goroutine from consuming
@@ -1646,8 +1685,12 @@ connectionSuccess:
 			case <-reconnectChan:
 				logger.Infof("🔄 Attempting to reconnect...")
 
-				// Wait before reconnecting
-				time.Sleep(reconnectBackoff)
+				// Wait before reconnecting (interruptible on shutdown)
+				select {
+				case <-time.After(reconnectBackoff):
+				case <-doneChan:
+					return
+				}
 
 				// Try to reconnect
 				if !client.IsConnected() {
@@ -1682,9 +1725,15 @@ connectionSuccess:
 
 	// Wait for termination signal then broadcast shutdown to all goroutines
 	<-exitChan
+	bridgeCancel()
 	close(doneChan)
 
 	fmt.Println("Disconnecting...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("Warning: HTTP server shutdown error: %v\n", err)
+	}
 	// Disconnect client
 	client.Disconnect()
 }

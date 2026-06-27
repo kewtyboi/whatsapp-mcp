@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,7 +149,7 @@ func TestHandleMessage_IncomingLIDMessage_StoredUnderPhoneJID(t *testing.T) {
 		"Hola, qué tal?",
 	)
 
-	handleMessage(client, ms, msg, logger)
+	handleMessage(context.Background(), client, ms, msg, logger)
 
 	// Message MUST be stored under the phone-based JID.
 	if count := queryMessageCount(ms, phonePN.String()); count != 1 {
@@ -178,7 +181,7 @@ func TestHandleMessage_OutgoingLIDMessage_StoredUnderPhoneJID(t *testing.T) {
 		"Todo bien!",
 	)
 
-	handleMessage(client, ms, msg, logger)
+	handleMessage(context.Background(), client, ms, msg, logger)
 
 	if count := queryMessageCount(ms, phonePN.String()); count != 1 {
 		t.Errorf("expected 1 message under phone JID %s, got %d", phonePN, count)
@@ -207,7 +210,7 @@ func TestHandleMessage_LIDWithStoreFallback_StoredUnderPhoneJID(t *testing.T) {
 		"Message without alt JIDs",
 	)
 
-	handleMessage(client, ms, msg, logger)
+	handleMessage(context.Background(), client, ms, msg, logger)
 
 	if count := queryMessageCount(ms, phonePN.String()); count != 1 {
 		t.Errorf("expected 1 message under phone JID %s, got %d", phonePN, count)
@@ -232,7 +235,7 @@ func TestHandleMessage_PhoneJID_Unaffected(t *testing.T) {
 		"Normal message",
 	)
 
-	handleMessage(client, ms, msg, logger)
+	handleMessage(context.Background(), client, ms, msg, logger)
 
 	if count := queryMessageCount(ms, phonePN.String()); count != 1 {
 		t.Errorf("expected 1 message under phone JID %s, got %d", phonePN, count)
@@ -459,5 +462,82 @@ func TestMigrateLegacyLIDChatsToPhoneJIDs_AggregatesByPhoneJIDDeterministically(
 	}
 	if lastMessage != "2026-03-01T11:00:00Z" {
 		t.Fatalf("expected merged last_message_time to be max source value, got %s", lastMessage)
+	}
+}
+
+func TestAuthMiddleware_NoToken(t *testing.T) {
+	orig := bridgeAPIToken
+	bridgeAPIToken = ""
+	defer func() { bridgeAPIToken = orig }()
+	called := false
+	handler := authMiddleware(func(w http.ResponseWriter, r *http.Request) { called = true; w.WriteHeader(200) })
+	req := httptest.NewRequest("GET", "/", nil)
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+	if !called {
+		t.Error("handler not called")
+	}
+}
+
+func TestAuthMiddleware_Reject(t *testing.T) {
+	orig := bridgeAPIToken
+	bridgeAPIToken = "tok"
+	defer func() { bridgeAPIToken = orig }()
+	handler := authMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	for _, hdr := range []string{"", "Bearer wrong"} {
+		req := httptest.NewRequest("GET", "/", nil)
+		if hdr != "" {
+			req.Header.Set("Authorization", hdr)
+		}
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+		if rr.Code != 401 {
+			t.Errorf("hdr=%q: expected 401, got %d", hdr, rr.Code)
+		}
+	}
+}
+
+func TestAuthMiddleware_Accept(t *testing.T) {
+	orig := bridgeAPIToken
+	bridgeAPIToken = "tok"
+	defer func() { bridgeAPIToken = orig }()
+	called := false
+	handler := authMiddleware(func(w http.ResponseWriter, r *http.Request) { called = true; w.WriteHeader(200) })
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+	if !called {
+		t.Error("handler not called")
+	}
+	if rr.Code != 200 {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestSanitiseChatJID(t *testing.T) {
+	cases := []struct {
+		in string
+		ok bool
+	}{
+		{"15551234567@s.whatsapp.net", true},
+		{"120363405907978788@g.us", true},
+		{"../../../etc/passwd", true}, // sanitised, not rejected
+		{"foo/bar", true},
+		{"foo\\bar", true},
+		{"..", true}, // sanitised to __
+		{"", false},
+	}
+	for _, c := range cases {
+		got, err := sanitiseChatJID(c.in)
+		if (err == nil) != c.ok {
+			t.Errorf("sanitiseChatJID(%q): err=%v wantOk=%v", c.in, err, c.ok)
+			continue
+		}
+		if err == nil {
+			if strings.Contains(got, "/") || strings.Contains(got, "\\") || strings.Contains(got, "..") {
+				t.Errorf("sanitiseChatJID(%q) = %q unsafe", c.in, got)
+			}
+		}
 	}
 }
