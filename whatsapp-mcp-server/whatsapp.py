@@ -953,3 +953,62 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None
+
+
+def revoke_message(chat_jid: str, message_id: str) -> tuple[bool, str]:
+    """Revoke (delete for everyone) a message this account sent.
+
+    The confirm flag is set here unconditionally — the MCP tool wrapper is
+    responsible for gating the caller with an explicit acknowledgement
+    before reaching this function.
+    """
+    try:
+        if not chat_jid or not message_id:
+            return False, "chat_jid and message_id must be provided"
+
+        url = f"{WHATSAPP_API_BASE_URL}/revoke-message"
+        payload = {"chat_jid": chat_jid, "message_id": message_id, "confirm": True}
+
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("success", False), result.get("message", "Unknown response")
+        return False, f"Error: HTTP {response.status_code} - {response.text}"
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def delete_chat(chat_jid: str) -> tuple[bool, str]:
+    """Delete a chat from this account. Syncs across linked devices and
+    always purges media. Counterparty is not affected.
+
+    The confirm flag is set here unconditionally — the MCP tool wrapper is
+    responsible for gating the caller with an explicit acknowledgement
+    before reaching this function.
+    """
+    try:
+        if not chat_jid:
+            return False, "chat_jid must be provided"
+
+        url = f"{WHATSAPP_API_BASE_URL}/delete-chat"
+        payload = {"chat_jid": chat_jid, "confirm": True}
+
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("success", False), result.get("message", "Unknown response")
+        return False, f"Error: HTTP {response.status_code} - {response.text}"
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
