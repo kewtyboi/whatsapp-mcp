@@ -18,6 +18,13 @@ PLIST_PATH="${HOME}/Library/LaunchAgents/${PLIST_LABEL}.plist"
 HEALTH_URL="http://localhost:8080/api/health"
 MAX_WAIT=30
 
+# The bridge authenticates every /api/* route, health included. Use the same
+# token the MCP server uses: WHATSAPP_BRIDGE_TOKEN, else store/.bridge-token.
+BRIDGE_TOKEN="${WHATSAPP_BRIDGE_TOKEN:-}"
+if [ -z "${BRIDGE_TOKEN}" ] && [ -r "${SCRIPT_DIR}/store/.bridge-token" ]; then
+  BRIDGE_TOKEN="$(tr -d '[:space:]' < "${SCRIPT_DIR}/store/.bridge-token")"
+fi
+
 log()  { echo "[deploy-mac] $*"; }
 die()  { echo "[deploy-mac] ERROR: $*" >&2; exit 1; }
 
@@ -76,7 +83,7 @@ log "Service restarted"
 log "Waiting for /api/health (up to ${MAX_WAIT}s)..."
 elapsed=0
 while [ "${elapsed}" -lt "${MAX_WAIT}" ]; do
-  if curl -sf "${HEALTH_URL}" > /tmp/wb-health.json 2>/dev/null; then
+  if curl -sf ${BRIDGE_TOKEN:+-H "Authorization: Bearer ${BRIDGE_TOKEN}"} "${HEALTH_URL}" > /tmp/wb-health.json 2>/dev/null; then
     status=$(python3 -c "import json,sys; d=json.load(open('/tmp/wb-health.json')); print(d.get('status','unknown'))" 2>/dev/null || echo "unknown")
     connected=$(python3 -c "import json,sys; d=json.load(open('/tmp/wb-health.json')); print(d.get('bridge_connected','?'))" 2>/dev/null || echo "?")
     log "Health: status=${status} bridge_connected=${connected}"

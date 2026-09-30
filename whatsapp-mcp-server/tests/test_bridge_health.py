@@ -175,7 +175,25 @@ class TestBridgeHealthEnvVar:
         with patch("main.urllib.request.urlopen", return_value=mock_resp) as mock_open:
             main_mod.check_bridge_health(url=custom_url, retries=1, timeout=5, retry_delay=0)
 
-        mock_open.assert_called_once_with(custom_url, timeout=5)
+        mock_open.assert_called_once()
+        request = mock_open.call_args.args[0]
+        assert request.full_url == custom_url
+        assert mock_open.call_args.kwargs == {"timeout": 5}
+
+    def test_bridge_token_sent_as_bearer_header(self, monkeypatch):
+        """The bridge authenticates /api/health, so the gate must send the bearer token."""
+        monkeypatch.setenv("WHATSAPP_BRIDGE_TOKEN", "unit-test-token")
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("main.urllib.request.urlopen", return_value=mock_resp) as mock_open:
+            assert check_bridge_health(url="http://localhost:8080/api/health", retries=1, timeout=5, retry_delay=0)
+
+        request = mock_open.call_args.args[0]
+        assert request.get_header("Authorization") == "Bearer unit-test-token"
 
     def test_default_url_used_when_env_var_absent(self, monkeypatch):
         """Without WHATSAPP_BRIDGE_URL, the default localhost:8080 URL is used."""
@@ -188,6 +206,7 @@ class TestBridgeHealthEnvVar:
         importlib.reload(main_mod)
 
         assert "localhost:8080" in main_mod._BRIDGE_HEALTH_URL
+        assert main_mod._BRIDGE_HEALTH_URL.endswith("/health")
 
 
 class TestMainExitOnBridgeDown:

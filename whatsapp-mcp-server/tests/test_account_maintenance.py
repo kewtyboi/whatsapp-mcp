@@ -125,9 +125,7 @@ class TestMcpToolConfirmGate:
     def test_revoke_message_forwards_when_confirmed(self):
         import main
 
-        with patch.object(
-            main, "whatsapp_revoke_message", return_value=(True, "Message revoke sent")
-        ) as bridge:
+        with patch.object(main, "whatsapp_revoke_message", return_value=(True, "Message revoke sent")) as bridge:
             result = main.revoke_message("1234@s.whatsapp.net", "MID123", confirm=True)
 
         assert result == {"success": True, "message": "Message revoke sent"}
@@ -156,9 +154,7 @@ class TestMcpToolConfirmGate:
     def test_delete_chat_forwards_when_confirmed(self):
         import main
 
-        with patch.object(
-            main, "whatsapp_delete_chat", return_value=(True, "Chat deletion synced")
-        ) as bridge:
+        with patch.object(main, "whatsapp_delete_chat", return_value=(True, "Chat deletion synced")) as bridge:
             result = main.delete_chat("1234@s.whatsapp.net", confirm=True)
 
         assert result == {"success": True, "message": "Chat deletion synced"}
