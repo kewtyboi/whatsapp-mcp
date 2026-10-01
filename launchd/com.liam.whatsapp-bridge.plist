@@ -5,13 +5,18 @@
   <key>Label</key>
   <string>com.liam.whatsapp-bridge</string>
 
-  <!-- IMPORTANT: Do NOT change this path to ~/Library/Application Support/whatsapp-bridge/
+  <!-- IMPORTANT: Do NOT change the binary path to ~/Library/Application Support/whatsapp-bridge/
        The WhatsApp Mac App Store app (net.whatsapp.WhatsApp) applies a sandbox policy that
        SIGKILL's any binary executed from that exact directory. The daemon directory name
-       whatsapp-bridge-daemon is intentionally different. See docs/macos-deploy.md. -->
+       whatsapp-bridge-daemon is intentionally different. See docs/macos-deploy.md.
+
+       Runs via run-daemon.sh (a thin wrapper that writes its own pid to
+       whatsapp-bridge.pid before exec'ing the binary) so newsyslog can send SIGTERM
+       on log rotation and let KeepAlive restart with a fresh log handle. See
+       whatsapp-bridge/run-daemon.sh and PointyTooling issue #3127. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/liam/Library/Application Support/whatsapp-bridge-daemon/whatsapp-bridge</string>
+    <string>/Users/liam/dev/whatsapp-mcp/whatsapp-bridge/run-daemon.sh</string>
   </array>
 
   <!-- WorkingDirectory must point at the directory containing the WhatsApp session database
