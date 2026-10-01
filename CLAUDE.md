@@ -8,6 +8,8 @@ This is the **whatsapp-mcp** repository - a Model Context Protocol (MCP) server 
 
 Originally forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp), now maintained by [kewtyboi](https://github.com/kewtyboi).
 
+See `AGENTS.md` (from upstream `verygoodplugins/whatsapp-mcp`) for contribution and PR rules, and `docs/UPSTREAM-SYNC-SOP.md` for how this fork is kept in sync with upstream.
+
 **Important:** This is the `kewtyboi/whatsapp-mcp` fork. Always use `origin` (not `upstream`) for PRs, issues, and `gh` commands. The default repo is set via `gh repo set-default kewtyboi/whatsapp-mcp`.
 
 ## Architecture
@@ -38,7 +40,7 @@ flowchart TB
 **Two Components:**
 
 1. **Go Bridge** (`whatsapp-bridge/`) - Connects to WhatsApp Web
-   - REST API: `/api/send`, `/api/download`, `/api/health`, `/api/typing`
+   - REST API (bearer-token auth, loopback only): `/api/send`, `/api/download`, `/api/health`, `/api/typing`, `/api/mark-read`, `/api/react`, `/api/revoke-message`, `/api/delete-chat`, plus on-demand history sync
    - Stores messages in SQLite (`store/messages.db`)
    - Forwards incoming messages via webhook
 

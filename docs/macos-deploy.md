@@ -121,7 +121,7 @@ launchctl bootstrap gui/$(id -u) "$PLIST"
 
 # 5. Verify
 sleep 5
-curl -s http://localhost:8080/api/health
+curl -s -H "Authorization: Bearer $(cat whatsapp-bridge/store/.bridge-token)" http://localhost:8080/api/health
 ```
 
 ## Logs
